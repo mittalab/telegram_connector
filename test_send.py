@@ -6,7 +6,7 @@ Requires: uvicorn app:app running in another terminal.
 
 import requests
 
-BASE_URL  = "http://localhost:8181"
+BASE_URL  = "https://telegramconnector-production.up.railway.app"
 BOT_TOKEN = "8819449715:AAErfcO08JiVHzfiMBF7l_H63YJwtPDWDsI"
 CHAT_ID   = 6888091818
 

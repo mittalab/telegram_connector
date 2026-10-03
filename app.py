@@ -1,27 +1,110 @@
 """
-Telegram Connector — FastAPI service
-Every request supplies its own bot_token and chat_id.
+Telegram Connector — FastAPI service + MCP SSE server
 
-Run:
-    uvicorn app:app --host 0.0.0.0 --port 8000
+HTTP REST endpoints  : /send, /send/trade-alert, /send/daily-summary,
+                       /send/error-alert, /verify
+MCP SSE endpoint     : /mcp/sse   ← cloud agents connect here
+
+Run locally:
+    uvicorn app:app --host 0.0.0.0 --port 8181
 """
+
+import os
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from mcp.server.fastmcp import FastMCP
 
 import notifier
 
+# ── FastAPI app ─────────────────────────────────────────────────────────────
+
 app = FastAPI(title="Telegram Connector")
 
+# ── MCP server (SSE transport for cloud agents) ─────────────────────────────
 
-# ── Shared credential fields (mixed into every request body) ────────────────
+_DEFAULT_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+_DEFAULT_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0") or "0")
+
+mcp = FastMCP("telegram-connector")
+
+
+def _tok(v): return v or _DEFAULT_TOKEN
+def _cid(v): return v or _DEFAULT_CHAT_ID
+
+
+@mcp.tool()
+def send_message(
+    text: str,
+    parse_mode: str = "HTML",
+    bot_token: str | None = None,
+    chat_id: int | None = None,
+) -> dict:
+    """Send a plain text or HTML-formatted message to a Telegram chat."""
+    try:
+        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text, parse_mode=parse_mode)
+        return {"message_id": mid}
+    except (ConnectionError, ValueError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def send_trade_alert(
+    symbol: str, signal: str,
+    entry: float, target: float, stop_loss: float, setup: str,
+    oi_change_pct: float | None = None,
+    atm_iv: float | None = None,
+    fii_flow: str | None = None,
+    bot_token: str | None = None,
+    chat_id: int | None = None,
+) -> dict:
+    """Send a formatted swing trade alert (LONG/SHORT) to a Telegram chat."""
+    text = notifier.format_trade_alert(
+        symbol=symbol, signal=signal, entry=entry, target=target,
+        stop_loss=stop_loss, setup=setup, oi_change_pct=oi_change_pct,
+        atm_iv=atm_iv, fii_flow=fii_flow,
+    )
+    try:
+        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text)
+        return {"message_id": mid}
+    except (ConnectionError, ValueError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def send_error_alert(
+    component: str, error: str,
+    bot_token: str | None = None,
+    chat_id: int | None = None,
+) -> dict:
+    """Send a silent pipeline error alert to a Telegram chat."""
+    text = notifier.format_error_alert(component, error)
+    try:
+        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text, disable_notification=True)
+        return {"message_id": mid}
+    except (ConnectionError, ValueError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def verify_bot(bot_token: str | None = None) -> dict:
+    """Verify a Telegram bot token is valid. Returns bot info."""
+    try:
+        return notifier.verify_bot(_tok(bot_token))
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+# Mount MCP SSE at /mcp  →  agents connect to /mcp/sse
+app.mount("/mcp", mcp.sse_app())
+
+
+# ── HTTP REST endpoints ─────────────────────────────────────────────────────
 
 class Credentials(BaseModel):
     bot_token: str
     chat_id:   int
 
-
-# ── /send — raw text ────────────────────────────────────────────────────────
 
 class SendRequest(Credentials):
     text:                 str
@@ -34,7 +117,7 @@ class SendResponse(BaseModel):
 
 
 @app.post("/send", response_model=SendResponse)
-def send(req: SendRequest):
+def http_send(req: SendRequest):
     try:
         mid = notifier.send_message(
             req.bot_token, req.chat_id, req.text,
@@ -46,11 +129,9 @@ def send(req: SendRequest):
     return {"message_id": mid}
 
 
-# ── /send/trade-alert ───────────────────────────────────────────────────────
-
 class TradeAlertRequest(Credentials):
     symbol:        str
-    signal:        str           # "LONG" or "SHORT"
+    signal:        str
     entry:         float
     target:        float
     stop_loss:     float
@@ -61,17 +142,11 @@ class TradeAlertRequest(Credentials):
 
 
 @app.post("/send/trade-alert", response_model=SendResponse)
-def send_trade_alert(req: TradeAlertRequest):
+def http_send_trade_alert(req: TradeAlertRequest):
     text = notifier.format_trade_alert(
-        symbol        = req.symbol,
-        signal        = req.signal,
-        entry         = req.entry,
-        target        = req.target,
-        stop_loss     = req.stop_loss,
-        setup         = req.setup,
-        oi_change_pct = req.oi_change_pct,
-        atm_iv        = req.atm_iv,
-        fii_flow      = req.fii_flow,
+        symbol=req.symbol, signal=req.signal, entry=req.entry,
+        target=req.target, stop_loss=req.stop_loss, setup=req.setup,
+        oi_change_pct=req.oi_change_pct, atm_iv=req.atm_iv, fii_flow=req.fii_flow,
     )
     try:
         mid = notifier.send_message(req.bot_token, req.chat_id, text)
@@ -79,8 +154,6 @@ def send_trade_alert(req: TradeAlertRequest):
         raise HTTPException(status_code=502, detail=str(e))
     return {"message_id": mid}
 
-
-# ── /send/daily-summary ─────────────────────────────────────────────────────
 
 class SignalEntry(BaseModel):
     symbol:    str
@@ -91,23 +164,20 @@ class SignalEntry(BaseModel):
 
 
 class DailySummaryRequest(Credentials):
-    date_str:          str
-    signals:           list[SignalEntry] = Field(default_factory=list)
-    vix:               float | None = None
-    fii_net:           float | None = None
-    dii_net:           float | None = None
-    nifty_change_pct:  float | None = None
+    date_str:         str
+    signals:          list[SignalEntry] = Field(default_factory=list)
+    vix:              float | None = None
+    fii_net:          float | None = None
+    dii_net:          float | None = None
+    nifty_change_pct: float | None = None
 
 
 @app.post("/send/daily-summary", response_model=SendResponse)
-def send_daily_summary(req: DailySummaryRequest):
+def http_send_daily_summary(req: DailySummaryRequest):
     text = notifier.format_daily_summary(
-        date_str         = req.date_str,
-        signals          = [s.model_dump() for s in req.signals],
-        vix              = req.vix,
-        fii_net          = req.fii_net,
-        dii_net          = req.dii_net,
-        nifty_change_pct = req.nifty_change_pct,
+        date_str=req.date_str, signals=[s.model_dump() for s in req.signals],
+        vix=req.vix, fii_net=req.fii_net, dii_net=req.dii_net,
+        nifty_change_pct=req.nifty_change_pct,
     )
     try:
         mid = notifier.send_message(req.bot_token, req.chat_id, text)
@@ -116,15 +186,13 @@ def send_daily_summary(req: DailySummaryRequest):
     return {"message_id": mid}
 
 
-# ── /send/error-alert ───────────────────────────────────────────────────────
-
 class ErrorAlertRequest(Credentials):
     component: str
     error:     str
 
 
 @app.post("/send/error-alert", response_model=SendResponse)
-def send_error_alert(req: ErrorAlertRequest):
+def http_send_error_alert(req: ErrorAlertRequest):
     text = notifier.format_error_alert(req.component, req.error)
     try:
         mid = notifier.send_message(req.bot_token, req.chat_id, text, disable_notification=True)
@@ -133,14 +201,12 @@ def send_error_alert(req: ErrorAlertRequest):
     return {"message_id": mid}
 
 
-# ── /verify ─────────────────────────────────────────────────────────────────
-
 class VerifyRequest(BaseModel):
     bot_token: str
 
 
 @app.post("/verify")
-def verify(req: VerifyRequest):
+def http_verify(req: VerifyRequest):
     try:
         return notifier.verify_bot(req.bot_token)
     except ValueError as e:

@@ -44,13 +44,23 @@ class _BearerGuard:
         self.inner = inner
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] == "http" and _MCP_API_KEY:
-            headers = dict(scope.get("headers", []))
-            auth = headers.get(b"authorization", b"").decode()
-            if auth != f"Bearer {_MCP_API_KEY}":
-                res = Response("Unauthorized", status_code=401)
-                await res(scope, receive, send)
-                return
+        if scope["type"] == "http":
+            headers = list(scope.get("headers", []))
+
+            # Auth check
+            if _MCP_API_KEY:
+                auth = dict(headers).get(b"authorization", b"").decode()
+                if auth != f"Bearer {_MCP_API_KEY}":
+                    await Response("Unauthorized", status_code=401)(scope, receive, send)
+                    return
+
+            # Rewrite Host header to localhost so FastMCP's DNS-rebinding
+            # protection passes — Railway terminates TLS and proxies as localhost.
+            scope = {**scope, "headers": [
+                (b"host", b"localhost") if k == b"host" else (k, v)
+                for k, v in headers
+            ]}
+
         await self.inner(scope, receive, send)
 
 def _check(bot_token: str | None, chat_id: int | None) -> dict | None:

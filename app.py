@@ -11,7 +11,8 @@ Run locally:
 
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
 
@@ -20,6 +21,19 @@ import notifier
 # ── FastAPI app ─────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Telegram Connector")
+
+# Optional API key guard for /mcp — set MCP_API_KEY env var to enable
+_MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
+
+class MCPAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if _MCP_API_KEY and request.url.path.startswith("/mcp"):
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {_MCP_API_KEY}":
+                return Response("Unauthorized", status_code=401)
+        return await call_next(request)
+
+app.add_middleware(MCPAuthMiddleware)
 
 # ── MCP server (SSE transport for cloud agents) ─────────────────────────────
 

@@ -1,5 +1,5 @@
 """
-Telegram Connector — FastAPI service + MCP SSE server
+Telegram Connector — FastAPI service + MCP streamable HTTP server
 
 HTTP REST endpoints  : /send, /send/trade-alert, /send/daily-summary,
                        /send/error-alert, /verify
@@ -12,6 +12,7 @@ Run locally:
 import os
 from contextlib import asynccontextmanager
 
+import anyio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
@@ -28,7 +29,8 @@ mcp = FastMCP("telegram-connector")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with mcp.session_manager:
+    async with anyio.create_task_group() as tg:
+        mcp.session_manager._task_group = tg
         yield
 
 app = FastAPI(title="Telegram Connector", lifespan=lifespan)
@@ -133,7 +135,7 @@ def verify_bot(bot_token: str) -> dict:
         return {"error": str(e)}
 
 
-# Mount MCP streamable HTTP at /mcp  →  agents connect to /mcp
+# Mount MCP streamable HTTP at /mcp  →  agents connect to /mcp/mcp
 app.mount("/mcp", _BearerGuard(mcp.streamable_http_app()))
 
 

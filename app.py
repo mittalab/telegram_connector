@@ -9,7 +9,7 @@ Run locally:
     uvicorn app:app --host 0.0.0.0 --port 8181
 """
 
-import os
+import os  # used by MCPAuthMiddleware only
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -35,76 +35,89 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(MCPAuthMiddleware)
 
-# ── MCP server (SSE transport for cloud agents) ─────────────────────────────
-
-_DEFAULT_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_DEFAULT_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0") or "0")
+# ── MCP server (streamable HTTP for cloud agents) ───────────────────────────
 
 mcp = FastMCP("telegram-connector")
 
 
-def _tok(v): return v or _DEFAULT_TOKEN
-def _cid(v): return v or _DEFAULT_CHAT_ID
+def _check(bot_token: str | None, chat_id: int | None) -> dict | None:
+    missing = []
+    if not bot_token:
+        missing.append("bot_token")
+    if not chat_id:
+        missing.append("chat_id")
+    if missing:
+        return {"error": f"Missing required field(s): {', '.join(missing)}"}
+    return None
 
 
 @mcp.tool()
 def send_message(
+    bot_token: str,
+    chat_id: int,
     text: str,
     parse_mode: str = "HTML",
-    bot_token: str | None = None,
-    chat_id: int | None = None,
 ) -> dict:
     """Send a plain text or HTML-formatted message to a Telegram chat."""
+    err = _check(bot_token, chat_id)
+    if err:
+        return err
     try:
-        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text, parse_mode=parse_mode)
-        return {"message_id": mid}
+        return {"message_id": notifier.send_message(bot_token, chat_id, text, parse_mode=parse_mode)}
     except (ConnectionError, ValueError) as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
 def send_trade_alert(
+    bot_token: str,
+    chat_id: int,
     symbol: str, signal: str,
     entry: float, target: float, stop_loss: float, setup: str,
     oi_change_pct: float | None = None,
     atm_iv: float | None = None,
     fii_flow: str | None = None,
-    bot_token: str | None = None,
-    chat_id: int | None = None,
 ) -> dict:
     """Send a formatted swing trade alert (LONG/SHORT) to a Telegram chat."""
+    err = _check(bot_token, chat_id)
+    if err:
+        return err
     text = notifier.format_trade_alert(
         symbol=symbol, signal=signal, entry=entry, target=target,
         stop_loss=stop_loss, setup=setup, oi_change_pct=oi_change_pct,
         atm_iv=atm_iv, fii_flow=fii_flow,
     )
     try:
-        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text)
-        return {"message_id": mid}
+        return {"message_id": notifier.send_message(bot_token, chat_id, text)}
     except (ConnectionError, ValueError) as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
 def send_error_alert(
-    component: str, error: str,
-    bot_token: str | None = None,
-    chat_id: int | None = None,
+    bot_token: str,
+    chat_id: int,
+    component: str,
+    error: str,
 ) -> dict:
     """Send a silent pipeline error alert to a Telegram chat."""
+    err = _check(bot_token, chat_id)
+    if err:
+        return err
     text = notifier.format_error_alert(component, error)
     try:
-        mid = notifier.send_message(_tok(bot_token), _cid(chat_id), text, disable_notification=True)
-        return {"message_id": mid}
+        return {"message_id": notifier.send_message(bot_token, chat_id, text, disable_notification=True)}
     except (ConnectionError, ValueError) as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
-def verify_bot(bot_token: str | None = None) -> dict:
+def verify_bot(bot_token: str) -> dict:
     """Verify a Telegram bot token is valid. Returns bot info."""
+    if not bot_token:
+        return {"error": "Missing required field: bot_token"}
     try:
-        return notifier.verify_bot(_tok(bot_token))
+        return notifier.verify_bot(bot_token)
     except ValueError as e:
         return {"error": str(e)}
 

@@ -12,7 +12,7 @@ Run locally:
 import os
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
 

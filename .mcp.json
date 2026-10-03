@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "telegram-connector": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "env": {
+        "TELEGRAM_CONNECTOR_URL": "https://telegramconnector-production.up.railway.app",
+        "TELEGRAM_BOT_TOKEN": "8819449715:AAErfcO08JiVHzfiMBF7l_H63YJwtPDWDsI",
+        "TELEGRAM_CHAT_ID": "6888091818"
+      }
+    }
+  }
+}

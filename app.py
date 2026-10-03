@@ -3,7 +3,7 @@ Telegram Connector — FastAPI service + MCP SSE server
 
 HTTP REST endpoints  : /send, /send/trade-alert, /send/daily-summary,
                        /send/error-alert, /verify
-MCP SSE endpoint     : /mcp/sse   ← cloud agents connect here
+MCP streamable HTTP  : /mcp       ← cloud agents connect here
 
 Run locally:
     uvicorn app:app --host 0.0.0.0 --port 8181
@@ -95,8 +95,8 @@ def verify_bot(bot_token: str | None = None) -> dict:
         return {"error": str(e)}
 
 
-# Mount MCP SSE at /mcp  →  agents connect to /mcp/sse
-app.mount("/mcp", mcp.sse_app())
+# Mount MCP streamable HTTP at /mcp  →  agents connect to /mcp
+app.mount("/mcp", mcp.streamable_http_app())
 
 
 # ── HTTP REST endpoints ─────────────────────────────────────────────────────

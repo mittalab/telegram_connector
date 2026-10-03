@@ -23,7 +23,19 @@ import notifier
 
 # ── MCP server ───────────────────────────────────────────────────────────────
 
-mcp = FastMCP("telegram-connector")
+_RAILWAY_HOST = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+
+mcp = FastMCP(
+    "telegram-connector",
+    host="0.0.0.0",
+    json_response=True,
+)
+
+# Allow Railway's public domain in transport security
+if _RAILWAY_HOST and hasattr(mcp, "settings"):
+    allowed = getattr(mcp.settings, "allowed_hosts", None)
+    if isinstance(allowed, list):
+        allowed.append(_RAILWAY_HOST)
 
 # ── FastAPI app with lifespan to initialize MCP task group ──────────────────
 

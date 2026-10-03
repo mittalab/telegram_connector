@@ -9,36 +9,47 @@ Run locally:
     uvicorn app:app --host 0.0.0.0 --port 8181
 """
 
-import os  # used by MCPAuthMiddleware only
+import os
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.responses import Response
 
 import notifier
 
-# ── FastAPI app ─────────────────────────────────────────────────────────────
-
-app = FastAPI(title="Telegram Connector")
-
-# Optional API key guard for /mcp — set MCP_API_KEY env var to enable
-_MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
-
-class MCPAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if _MCP_API_KEY and request.url.path.startswith("/mcp"):
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {_MCP_API_KEY}":
-                return Response("Unauthorized", status_code=401)
-        return await call_next(request)
-
-app.add_middleware(MCPAuthMiddleware)
-
-# ── MCP server (streamable HTTP for cloud agents) ───────────────────────────
+# ── MCP server ───────────────────────────────────────────────────────────────
 
 mcp = FastMCP("telegram-connector")
 
+# ── FastAPI app with lifespan to initialize MCP task group ──────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with mcp.session_manager:
+        yield
+
+app = FastAPI(title="Telegram Connector", lifespan=lifespan)
+
+# Optional API key guard for /mcp — set MCP_API_KEY env var to enable.
+# Uses a raw ASGI wrapper (not BaseHTTPMiddleware) to avoid breaking streaming.
+_MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
+
+class _BearerGuard:
+    def __init__(self, inner: ASGIApp):
+        self.inner = inner
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http" and _MCP_API_KEY:
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"").decode()
+            if auth != f"Bearer {_MCP_API_KEY}":
+                res = Response("Unauthorized", status_code=401)
+                await res(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
 
 def _check(bot_token: str | None, chat_id: int | None) -> dict | None:
     missing = []
@@ -123,7 +134,7 @@ def verify_bot(bot_token: str) -> dict:
 
 
 # Mount MCP streamable HTTP at /mcp  →  agents connect to /mcp
-app.mount("/mcp", mcp.streamable_http_app())
+app.mount("/mcp", _BearerGuard(mcp.streamable_http_app()))
 
 
 # ── HTTP REST endpoints ─────────────────────────────────────────────────────
